@@ -16,9 +16,11 @@ func main() {
 
 	// ✅ Add CORS middleware
 	app.Use(cors.New(cors.Config{
-		AllowOrigins: "*", // Or "http://localhost:5173" for specific frontend
+		AllowOrigins: "http://localhost:5173", // 👈 your frontend origin here
 		AllowHeaders: "Origin, Content-Type, Accept",
+		AllowCredentials: true, // 👈 if you're using cookies or Supabase Auth
 	}))
+	
 
 	// ✅ Health check route
 	app.Get("/api/health", func(c *fiber.Ctx) error {

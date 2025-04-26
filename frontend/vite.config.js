@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 // https://vitejs.dev/config/
 export default defineConfig({
   plugins: [react()],
+  base: "/",
   server: {
     port: 5173,
     host: true,
@@ -32,5 +33,4 @@ export default defineConfig({
   define: {
     "process.env": process.env,
   },
-  base: "/", // This ensures proper asset loading in production
 });

@@ -49,48 +49,68 @@ function EditorPage({ session }) {
   const isSharedUser = sharedWith.includes(userEmail);
   const canEdit = isOwner || isSharedUser;
 
-  useEffect(() => {
-    const fetchDoc = async () => {
-      const { data, error } = await supabase
-        .from('documents')
-        .select('title, content, owner_id, shared_with')
-        .eq('id', docID)
-        .single();
+  const fetchDoc = async () => {
+    if (!docID) return;
+    
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .eq('id', docID)
+      .single();
 
-      if (error) {
-        console.error('❌ Error loading document:', error.message);
-        setContent('// Failed to load document');
-        return;
-      }
-
-      setTitle(data.title || 'Untitled');
-      setContent(data.content || '');
-      setOwnerID(data.owner_id);
-      setSharedWith(data.shared_with || []);
-
-      fetchSharedUserDetails(data.shared_with || []);
-    };
-
-    fetchDoc();
-  }, [docID]);
-
-  const fetchSharedUserDetails = async (emails) => {
-    if (!emails || emails.length === 0) {
-      setSharedUsers([]);
+    if (error) {
+      console.error('Error fetching document:', error);
       return;
     }
 
+    if (data) {
+      setTitle(data.title);
+      setContent(data.content);
+      setOwnerID(data.owner_id);
+      setSharedWith(data.shared_with || []);
+    }
+  };
+
+  const fetchSharedUserDetails = async (emails) => {
+    if (!emails || emails.length === 0) return;
+
     const { data, error } = await supabase
       .from('users')
-      .select('id, name, email')
+      .select('id, email, user_metadata')
       .in('email', emails);
 
     if (error) {
-      console.error("❌ Failed to load shared user details:", error.message);
-    } else {
+      console.error('Error fetching shared users:', error);
+      return;
+    }
+
+    if (data) {
       setSharedUsers(data);
     }
   };
+
+  // Initial data fetch
+  useEffect(() => {
+    if (docID && userID) {
+      fetchDoc();
+    }
+  }, [docID, userID]);
+
+  // WebSocket connection
+  useEffect(() => {
+    if (docID && userID) {
+      connectWebSocket();
+    }
+
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+      }
+      if (typingTimeout.current) {
+        clearTimeout(typingTimeout.current);
+      }
+    };
+  }, [docID, userID]);
 
   // ✨ Cursor Position Broadcasting
   useEffect(() => {
@@ -117,23 +137,6 @@ function EditorPage({ session }) {
       textarea.removeEventListener('click', handleCursorMove);
     };
   }, [userID, canEdit, userName]);
-
-  // 🔌 WebSocket Connect + Presence Handling
-  useEffect(() => {
-    if (docID && userID) {
-      fetchDoc();
-      connectWebSocket();
-    }
-
-    return () => {
-      if (ws.current) {
-        ws.current.close();
-      }
-      if (typingTimeout.current) {
-        clearTimeout(typingTimeout.current);
-      }
-    };
-  }, [docID, userID]);
 
   const connectWebSocket = () => {
     if (ws.current?.readyState === WebSocket.OPEN) {

@@ -3,5 +3,14 @@ import config from "./config";
 
 export const supabase = createClient(
   config.supabaseUrl,
-  config.supabaseAnonKey
+  config.supabaseAnonKey,
+  {
+    auth: {
+      autoRefreshToken: true,
+      persistSession: true,
+      detectSessionInUrl: true,
+      flowType: "pkce",
+      redirectTo: config.authRedirectUrl,
+    },
+  }
 );

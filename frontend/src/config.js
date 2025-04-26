@@ -17,6 +17,10 @@ const config = {
 
   // Build Configuration
   buildVersion: import.meta.env.VITE_BUILD_VERSION || "development",
+
+  // Auth Configuration
+  authRedirectUrl:
+    import.meta.env.VITE_AUTH_REDIRECT_URL || window.location.origin,
 };
 
 // Validate required environment variables
@@ -33,6 +37,7 @@ if (config.isDevelopment) {
   console.log("WebSocket Protocol:", config.wsProtocol);
   console.log("WebSocket Host:", config.wsHost);
   console.log("WebSocket Port:", config.wsPort);
+  console.log("Auth Redirect URL:", config.authRedirectUrl);
 }
 
 export default config;

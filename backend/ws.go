@@ -5,24 +5,27 @@ import (
 	"encoding/json"
 	"log"
 	"sync"
+	"time"
 
 	"github.com/gofiber/websocket/v2"
 )
 
 type Client struct {
-	conn  *websocket.Conn
-	write chan []byte
+	conn     *websocket.Conn
+	write    chan []byte
+	docID    string
+	userID   string
+	lastPing time.Time
 }
 
 type Message struct {
-	Type     string `json:"type"`              // "edit", "presence", "cursor"
+	Type     string `json:"type"` // "edit", "presence", "cursor", "ping"
 	UserID   string `json:"userID,omitempty"`
-	Name     string `json:"name,omitempty"`    // for presence
-	Joined   bool   `json:"joined,omitempty"`  // for presence
-	Content  string `json:"content,omitempty"` // for edits
+	Name     string `json:"name,omitempty"`     // for presence
+	Joined   bool   `json:"joined,omitempty"`   // for presence
+	Content  string `json:"content,omitempty"`  // for edits
 	Position int    `json:"position,omitempty"` // for cursor
 }
-
 
 var (
 	clients        = make(map[string]map[*Client]bool) // docID -> clients
@@ -33,11 +36,22 @@ var (
 
 func handleWebSocket(conn *websocket.Conn) {
 	docID := conn.Params("docID")
+	if docID == "" {
+		log.Println("❌ No document ID provided")
+		conn.Close()
+		return
+	}
+
 	log.Printf("🆕 WebSocket connection: docID=%s\n", docID)
 
+	// Get Redis client
+	rdb := getRedisClient()
+
 	client := &Client{
-		conn:  conn,
-		write: make(chan []byte, 256),
+		conn:     conn,
+		write:    make(chan []byte, 256),
+		docID:    docID,
+		lastPing: time.Now(),
 	}
 
 	// Register client
@@ -48,6 +62,10 @@ func handleWebSocket(conn *websocket.Conn) {
 	clients[docID][client] = true
 	log.Printf("👥 Client added to doc %s | total clients: %d\n", docID, len(clients[docID]))
 	clientsMu.Unlock()
+
+	// Start ping ticker
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
 
 	// Subscribe to Redis channel for this doc (only once)
 	subscribedMu.Lock()
@@ -60,11 +78,25 @@ func handleWebSocket(conn *websocket.Conn) {
 
 	// Write loop
 	go func() {
-		for msg := range client.write {
-			log.Printf("📤 Sending message to client on doc %s: %s\n", docID, msg)
-			if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
-				log.Println("❌ Error writing to WebSocket:", err)
-				break
+		for {
+			select {
+			case msg, ok := <-client.write:
+				if !ok {
+					return
+				}
+				if err := client.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+					log.Println("❌ Error writing to WebSocket:", err)
+					return
+				}
+			case <-pingTicker.C:
+				if time.Since(client.lastPing) > 60*time.Second {
+					log.Println("⚠️ Client ping timeout")
+					return
+				}
+				if err := client.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+					log.Println("❌ Error sending ping:", err)
+					return
+				}
 			}
 		}
 	}()
@@ -72,10 +104,15 @@ func handleWebSocket(conn *websocket.Conn) {
 	// Read loop
 	autosaveStarted := false
 	for {
-		_, msg, err := conn.ReadMessage()
+		messageType, msg, err := conn.ReadMessage()
 		if err != nil {
 			log.Println("🔌 WebSocket read error (disconnected?):", err)
 			break
+		}
+
+		if messageType == websocket.PingMessage {
+			client.lastPing = time.Now()
+			continue
 		}
 
 		log.Printf("📥 Received from client (doc %s): %s\n", docID, msg)
@@ -84,6 +121,11 @@ func handleWebSocket(conn *websocket.Conn) {
 		if err := json.Unmarshal(msg, &parsed); err != nil {
 			log.Println("❌ Invalid JSON:", err)
 			continue
+		}
+
+		// Store userID for this client
+		if parsed.UserID != "" {
+			client.userID = parsed.UserID
 		}
 
 		switch parsed.Type {
@@ -122,6 +164,14 @@ func handleWebSocket(conn *websocket.Conn) {
 				log.Println("❌ Redis publish error (cursor):", err)
 			}
 
+		case "ping":
+			client.lastPing = time.Now()
+			// Send pong response
+			if err := conn.WriteMessage(websocket.PongMessage, nil); err != nil {
+				log.Println("❌ Error sending pong:", err)
+				return
+			}
+
 		default:
 			log.Println("⚠️ Unknown message type:", parsed.Type)
 		}
@@ -138,10 +188,10 @@ func handleWebSocket(conn *websocket.Conn) {
 	clientsMu.Unlock()
 }
 
-
-
-
 func subscribeAndBroadcast(docID string) {
+	// Get Redis client
+	rdb := getRedisClient()
+
 	pubsub := rdb.Subscribe(context.Background(), "doc:"+docID)
 	defer pubsub.Close()
 

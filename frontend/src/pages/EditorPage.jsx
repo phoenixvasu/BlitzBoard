@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../supabaseClient';
+import config from '../config';
 
 // Generates a consistent color based on userID hash
 function getUserColor(userID) {
@@ -119,103 +120,98 @@ function EditorPage({ session }) {
 
   // 🔌 WebSocket Connect + Presence Handling
   useEffect(() => {
-    if (!userID) return;
+    if (docID && userID) {
+      fetchDoc();
+      connectWebSocket();
+    }
 
-    const connectWebSocket = () => {
-      const socket = new WebSocket(`ws://localhost:8080/ws/${docID}`);
+    return () => {
+      if (ws.current) {
+        ws.current.close();
+      }
+      if (typingTimeout.current) {
+        clearTimeout(typingTimeout.current);
+      }
+    };
+  }, [docID, userID]);
 
-      socket.onopen = () => {
-        console.log('✅ WebSocket connected');
-        setStatus('Connected');
-        reconnectAttempts.current = 0;
+  const connectWebSocket = () => {
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      return;
+    }
 
-        socket.send(JSON.stringify({
-          type: 'presence',
-          userID,
-          name: userName,
-          joined: true,
-        }));
-      };
-
-      socket.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-
-          // 🧑‍🤝‍🧑 Presence Message
-          if (message.type === 'presence') {
-            setOnlineUsers(prev => {
-              const updated = { ...prev };
-              if (message.joined) {
-                updated[message.userID] = message.name;
-              } else {
-                delete updated[message.userID];
-              }
-              return updated;
-            });
-            return;
-          }
-
-          // 👁 Cursor Message
-          if (message.type === 'cursor') {
-            setCursors(prev => ({
-              ...prev,
-              [message.userID]: {
-                name: message.name,
-                position: message.position,
-                color: getUserColor(message.userID),
-              },
-            }));
-            return;
-          }
-
-          // ✍️ Edit Message
-          if (message.userID !== userID && message.content) {
-            setContent(message.content);
-          }
-        } catch (err) {
-          console.warn('⚠️ Invalid WebSocket message:', event.data);
-        }
-      };
-
-      socket.onerror = (err) => {
-        console.error('🛑 WebSocket error:', err);
-        setStatus('Connection error');
-      };
-
-      socket.onclose = (event) => {
-        console.warn(`🔌 Disconnected (code: ${event.code}). Retrying...`);
-        setStatus('Reconnecting...');
-        if (reconnectAttempts.current < 10) {
-          setTimeout(connectWebSocket, 3000);
-          reconnectAttempts.current += 1;
-        } else {
-          setStatus('Failed to reconnect');
-        }
-      };
-
-      ws.current = socket;
+    const wsUrl = `${config.wsProtocol}//${config.wsHost}${config.isProduction ? '' : ':' + config.wsPort}/ws/${docID}`;
+    
+    ws.current = new WebSocket(wsUrl);
+    ws.current.onopen = () => {
+      setStatus('Connected');
+      reconnectAttempts.current = 0;
+      
+      // Send presence message
+      ws.current.send(JSON.stringify({
+        type: 'presence',
+        userID,
+        userName,
+        color: getUserColor(userID)
+      }));
     };
 
-    connectWebSocket();
-    // 👋 Send leave presence on unload
-    const handleLeave = () => {
-      if (ws.current?.readyState === WebSocket.OPEN) {
-        ws.current.send(JSON.stringify({
-          type: 'presence',
-          userID,
-          name: userName,
-          joined: false,
-        }));
+    ws.current.onclose = () => {
+      setStatus('Disconnected');
+      if (reconnectAttempts.current < 10) {
+        reconnectAttempts.current += 1;
+        setTimeout(connectWebSocket, 1000 * reconnectAttempts.current);
       }
     };
 
-    window.addEventListener('beforeunload', handleLeave);
-    return () => {
-      handleLeave();
-      window.removeEventListener('beforeunload', handleLeave);
-      ws.current?.close();
+    ws.current.onerror = (error) => {
+      console.error('WebSocket error:', error);
+      setStatus('Error');
     };
-  }, [docID, userID]);
+
+    ws.current.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        handleWebSocketMessage(message);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+  };
+
+  const handleWebSocketMessage = (message) => {
+    // Handle presence messages
+    if (message.type === 'presence') {
+      setOnlineUsers(prev => {
+        const updated = { ...prev };
+        if (message.joined) {
+          updated[message.userID] = message.name;
+        } else {
+          delete updated[message.userID];
+        }
+        return updated;
+      });
+      return;
+    }
+
+    // Handle cursor messages
+    if (message.type === 'cursor') {
+      setCursors(prev => ({
+        ...prev,
+        [message.userID]: {
+          name: message.name,
+          position: message.position,
+          color: getUserColor(message.userID),
+        },
+      }));
+      return;
+    }
+
+    // Handle edit messages
+    if (message.userID !== userID && message.content) {
+      setContent(message.content);
+    }
+  };
 
   const handleChange = (e) => {
     if (!canEdit) return;

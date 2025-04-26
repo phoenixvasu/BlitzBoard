@@ -2,6 +2,8 @@ package main
 
 import (
 	"log"
+	"os"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -9,36 +11,70 @@ import (
 )
 
 func main() {
-	// Initialize Redis (placeholder, define this in your code)
+	// Initialize Redis
 	initRedis()
 
-	app := fiber.New()
-
-	// ✅ Add CORS middleware
-	app.Use(cors.New(cors.Config{
-		AllowOrigins: "http://localhost:5173", // 👈 your frontend origin here
-		AllowHeaders: "Origin, Content-Type, Accept",
-		AllowCredentials: true, // 👈 if you're using cookies or Supabase Auth
-	}))
-	
-
-	// ✅ Health check route
-	app.Get("/api/health", func(c *fiber.Ctx) error {
-		return c.SendString("OK")
+	// Create Fiber app
+	app := fiber.New(fiber.Config{
+		ReadTimeout:  time.Second * 10,
+		WriteTimeout: time.Second * 10,
+		// Enable case sensitive routing
+		CaseSensitive: true,
+		// Enable strict routing
+		StrictRouting: true,
+		// Server name header
+		ServerHeader: "BlitzBoard",
+		// App name header
+		AppName: "BlitzBoard Backend",
 	})
 
-	// ✅ WebSocket upgrade middleware (before handler)
+	// Configure CORS
+	app.Use(cors.New(cors.Config{
+		AllowOrigins:     os.Getenv("ALLOWED_ORIGINS"), // Will be set in Render
+		AllowMethods:     "GET,POST,PUT,DELETE,OPTIONS",
+		AllowHeaders:     "Origin, Content-Type, Accept, Authorization",
+		AllowCredentials: true,
+		MaxAge:           3600,
+	}))
+
+	// Health check endpoint
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status": "ok",
+			"time":   time.Now().UTC(),
+		})
+	})
+
+	// WebSocket endpoint with document ID
 	app.Use("/ws/:docID", func(c *fiber.Ctx) error {
 		if websocket.IsWebSocketUpgrade(c) {
-			c.Locals("allowed", true)
+			c.Locals("docID", c.Params("docID"))
 			return c.Next()
 		}
 		return fiber.ErrUpgradeRequired
 	})
 
-	// ✅ WebSocket route
 	app.Get("/ws/:docID", websocket.New(handleWebSocket))
 
-	log.Println("🚀 Server listening on http://localhost:8080")
-	log.Fatal(app.Listen("0.0.0.0:8080"))
+	// Start server
+	port := getPort()
+	host := getHost()
+	log.Printf("🚀 Server starting on %s:%s", host, port)
+	log.Fatal(app.Listen(host + ":" + port))
+}
+
+func getPort() string {
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080"
+	}
+	return port
+}
+
+func getHost() string {
+	host := os.Getenv("HOST")
+	if host == "" {
+		host = "0.0.0.0" // Default to all interfaces
+	}
+	return host
 }
